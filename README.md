@@ -49,6 +49,23 @@ npm run dev
 
 This starts the Bolt app in Socket Mode—no public URL or tunneling tool is required.
 
+## Deploying
+
+The project includes a PM2 script that keeps the bot running on a server:
+
+1. Install dependencies and configure `.env` on the host as described above.
+2. Start the background process with:
+
+   ```bash
+   npm run deploy
+   ```
+
+   This launches PM2 with a process named `uplogd-bot` that watches the `src` directory for changes.
+
+3. Check the process anytime with `pm2 status uplogd-bot`.
+4. Stream logs when needed with `pm2 logs uplogd-bot`.
+5. Stop or remove the process via `pm2 stop uplogd-bot` or `pm2 delete uplogd-bot`.
+
 ## How it works
 
 - The global shortcut fires `src/app.js`, which fetches assets from `ASSETS_ENDPOINT`, then opens the modal defined in `src/modal.js`.
