@@ -119,19 +119,13 @@ function resolveMachineTargets(asset, targets) {
   return resolvedTargets.filter(({ assetId }) => Boolean(assetId));
 }
 
-export async function submitFormPayload({ user, team, view, logger }) {
-  const endpoint = getRequiredEnv("API_ENDPOINT", API_ENDPOINT);
-  const headers = {
-    "Content-Type": "application/json",
-    ...(API_AUTH_TOKEN ? { Authorization: `Bearer ${API_AUTH_TOKEN}` } : {}),
-  };
-
+export async function prepareSubmissionDetails({ view, logger }) {
   const { asset, operation, targets } = extractValues(view.state);
   const enrichedAsset = await enrichAssetMetadata(asset, logger);
 
   if (!enrichedAsset) {
     logger?.warn?.("No asset selected; skipping outbound request.");
-    return;
+    return null;
   }
 
   const privateMetadata = view?.private_metadata
@@ -139,9 +133,48 @@ export async function submitFormPayload({ user, team, view, logger }) {
     : null;
   const submittedAt = new Date().toISOString();
   const machineTargets = resolveMachineTargets(enrichedAsset, targets);
-
   const baseAssetId = enrichedAsset.id;
   const baseAssetLabel = enrichedAsset.label ?? enrichedAsset.id ?? "unknown";
+
+  return {
+    asset: enrichedAsset,
+    operation,
+    targets,
+    privateMetadata,
+    submittedAt,
+    machineTargets,
+    baseAsset: { id: baseAssetId, label: baseAssetLabel },
+  };
+}
+
+export async function submitFormPayload({
+  user,
+  team,
+  view,
+  logger,
+  preparedSubmission,
+}) {
+  const endpoint = getRequiredEnv("API_ENDPOINT", API_ENDPOINT);
+  const headers = {
+    "Content-Type": "application/json",
+    ...(API_AUTH_TOKEN ? { Authorization: `Bearer ${API_AUTH_TOKEN}` } : {}),
+  };
+  const submissionDetails =
+    preparedSubmission ?? (await prepareSubmissionDetails({ view, logger }));
+
+  if (!submissionDetails) {
+    return null;
+  }
+
+  const {
+    asset: enrichedAsset,
+    operation,
+    targets,
+    privateMetadata,
+    submittedAt,
+    machineTargets,
+    baseAsset,
+  } = submissionDetails;
   const results = await Promise.all(
     machineTargets.map(async ({ assetId, machine }) => {
       const url = buildBaseUrl(endpoint, assetId, operation);
@@ -195,9 +228,14 @@ export async function submitFormPayload({ user, team, view, logger }) {
   );
 
   return {
-    baseAsset: { id: baseAssetId, label: baseAssetLabel },
+    baseAsset,
     operation,
     submittedAt,
     results,
+    requestedBy: {
+      id: user?.id ?? null,
+      username: user?.username ?? null,
+      realName: user?.name ?? user?.real_name ?? null,
+    },
   };
 }

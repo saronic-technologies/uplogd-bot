@@ -46,7 +46,7 @@ function sanitizeContextForButton(context) {
       ? context.results.map((item) => ({
           assetId: item?.assetId ?? null,
           machine: item?.machine ?? null,
-          success: Boolean(item?.success),
+          success: typeof item?.success === "boolean" ? item.success : null,
           statusCode:
             typeof item?.statusCode === "number" ? item.statusCode : null,
           responseSummary: item?.responseSummary ?? null,
@@ -56,7 +56,7 @@ function sanitizeContextForButton(context) {
       ? context.statuses.map((item) => ({
           assetId: item?.assetId ?? null,
           machine: item?.machine ?? null,
-          success: Boolean(item?.success),
+          success: typeof item?.success === "boolean" ? item.success : null,
           statusCode:
             typeof item?.statusCode === "number" ? item.statusCode : null,
           responseSummary: item?.responseSummary ?? null,
@@ -64,6 +64,45 @@ function sanitizeContextForButton(context) {
         }))
       : [],
     pendingStatusCheck: Boolean(context?.pendingStatusCheck),
+    pendingRequest: Boolean(context?.pendingRequest),
+    requestedBy: context?.requestedBy
+      ? {
+          id: context.requestedBy.id ?? null,
+          username: context.requestedBy.username ?? null,
+          realName: context.requestedBy.realName ?? null,
+        }
+      : { id: null, username: null, realName: null },
+    responseMode:
+      context?.responseMode === "ephemeral" ? "ephemeral" : "update",
+  };
+}
+
+function getRequestedByLabel(requestedBy) {
+  if (requestedBy?.id) {
+    return `<@${requestedBy.id}>`;
+  }
+
+  return "Someone";
+}
+
+function buildSummaryParts(context) {
+  const actionLabel = formatOperation(context.operation);
+  const assetLabel =
+    context.baseAsset?.label ?? context.baseAsset?.id ?? "Unknown asset";
+  const assetLabelUpper = String(assetLabel).toUpperCase();
+  const operationKeyword =
+    getOperationKeyword(context.operation) || actionLabel.toLowerCase();
+  const requestedByLabel = getRequestedByLabel(context.requestedBy);
+  const summaryLine = `${requestedByLabel} sent a ${operationKeyword} uplogd request for *${assetLabelUpper}*`;
+
+  return {
+    actionLabel,
+    assetLabel,
+    assetLabelUpper,
+    assetLabelPlain: String(assetLabel),
+    operationKeyword,
+    requestedByLabel,
+    summaryLine,
   };
 }
 
@@ -76,17 +115,24 @@ function encodeButtonValue(context) {
 }
 
 export function buildSubmissionMessage(context) {
-  const actionLabel = formatOperation(context.operation);
-  const assetLabel =
-    context.baseAsset?.label ?? context.baseAsset?.id ?? "Unknown asset";
-  const assetLabelUpper = String(assetLabel).toUpperCase();
-  const operationKeyword = getOperationKeyword(context.operation) || actionLabel.toLowerCase();
+  const {
+    actionLabel,
+    assetLabelUpper,
+    operationKeyword,
+    requestedByLabel,
+    summaryLine,
+  } = buildSummaryParts(context);
 
   const requestFields =
     Array.isArray(context.results) && context.results.length > 0
       ? context.results.map(({ machine, success }) => {
           const machineLabel = formatMachineLabel(machine);
-          const outcome = success ? "success" : "failed";
+          const outcome =
+            success === true
+              ? "succeeded"
+              : success === false
+              ? "failed"
+              : "in progress";
           return {
             type: "mrkdwn",
             text: `*${machineLabel}*\n${operationKeyword} uplogd ${outcome}`,
@@ -98,9 +144,7 @@ export function buildSubmissionMessage(context) {
     Array.isArray(context.statuses) && context.statuses.length > 0
       ? context.statuses.map(({ machine, responseSummary, success }) => {
           const machineLabel = formatMachineLabel(machine);
-          const summary =
-            responseSummary ??
-            (success ? "success" : "failed");
+          const summary = responseSummary ?? (success ? "success" : "failed");
           return {
             type: "mrkdwn",
             text: `*${machineLabel}*\n${summary}`,
@@ -110,14 +154,6 @@ export function buildSubmissionMessage(context) {
 
   const previewTimestamp = formatPreviewTimestamp(context.submittedAt);
   const blocks = [
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*${actionLabel}* request sent to *${assetLabelUpper}* at ${previewTimestamp}`,
-      },
-    },
-    { type: "divider" },
     {
       type: "header",
       text: { type: "plain_text", text: assetLabelUpper },
@@ -138,16 +174,23 @@ export function buildSubmissionMessage(context) {
     { type: "divider" },
   ];
 
-  if (context.pendingStatusCheck) {
+  if (context.pendingRequest) {
     blocks.push({
       type: "section",
       text: {
         type: "mrkdwn",
-        text: ":large_blue_circle: Checking current status… _up to 1 minute_",
+        text: ":hourglass_flowing_sand: Request sent. Waiting for uplogd to confirm the SSH action…",
       },
     });
-  } else {
-    const buttonContext = { ...context, pendingStatusCheck: false };
+    blocks.push({ type: "divider" });
+  }
+
+  if (!context.pendingRequest) {
+    const isPendingStatus = Boolean(context.pendingStatusCheck);
+    const buttonContext = {
+      ...context,
+      pendingStatusCheck: isPendingStatus,
+    };
     blocks.push({
       type: "actions",
       block_id: "uplogd_status_actions",
@@ -156,42 +199,40 @@ export function buildSubmissionMessage(context) {
           type: "button",
           action_id: ACTION_IDS.statusCheck,
           style: "primary",
-          text: { type: "plain_text", text: "Check status" },
+          text: {
+            type: "plain_text",
+            text: isPendingStatus
+              ? ":hourglass_flowing_sand: Checking status…"
+              : "Check status",
+          },
           value: encodeButtonValue(buttonContext),
         },
       ],
     });
+
+    if (!isPendingStatus && statusFields.length > 0) {
+      const lastStatusTimestampRaw = context.statuses?.[0]?.checkedAt ?? null;
+      const lastStatusTimestamp = lastStatusTimestampRaw
+        ? formatPreviewTimestamp(lastStatusTimestampRaw)
+        : previewTimestamp;
+
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Last status check | ${lastStatusTimestamp}:*`,
+        },
+      });
+      blocks.push({
+        type: "section",
+        fields: statusFields,
+      });
+    }
   }
 
-  const lastStatusTimestampRaw = context.statuses?.[0]?.checkedAt ?? null;
-  const lastStatusTimestamp = lastStatusTimestampRaw
-    ? formatPreviewTimestamp(lastStatusTimestampRaw)
-    : null;
-
-  if (statusFields.length > 0) {
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `*Last status check | ${lastStatusTimestamp ?? previewTimestamp}:*`,
-      },
-    });
-    blocks.push({
-      type: "section",
-      fields: statusFields,
-    });
-  } else {
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "*Last status check:* _No status checks yet._",
-      },
-    });
-  }
 
   return {
-    text: `${actionLabel} request sent to ${assetLabelUpper} at ${previewTimestamp}`,
+    text: `${requestedByLabel} sent a ${operationKeyword} uplogd request for ${assetLabelUpper}`,
     blocks,
   };
 }
@@ -200,18 +241,41 @@ export function createSubmissionContext(submission) {
   const baseAsset =
     submission?.baseAsset && typeof submission.baseAsset === "object"
       ? submission.baseAsset
-      : { id: submission?.baseAsset ?? null, label: submission?.baseAsset ?? null };
+      : {
+          id: submission?.baseAsset ?? null,
+          label: submission?.baseAsset ?? null,
+        };
 
   const results = Array.isArray(submission?.results)
     ? submission.results.map((item) => ({
         assetId: item?.assetId ?? baseAsset?.id ?? "unknown",
         machine: item?.machine ?? null,
-        success: Boolean(item?.success),
+        success: typeof item?.success === "boolean" ? item.success : null,
         statusCode:
           typeof item?.statusCode === "number" ? item.statusCode : null,
         responseSummary: item?.responseSummary ?? null,
       }))
     : [];
+
+  const statuses = Array.isArray(submission?.statuses)
+    ? submission.statuses.map((item) => ({
+        assetId: item?.assetId ?? baseAsset?.id ?? "unknown",
+        machine: item?.machine ?? null,
+        success: typeof item?.success === "boolean" ? item.success : null,
+        statusCode:
+          typeof item?.statusCode === "number" ? item.statusCode : null,
+        responseSummary: item?.responseSummary ?? null,
+        checkedAt: item?.checkedAt ?? null,
+      }))
+    : [];
+
+  const requestedBy = submission?.requestedBy
+    ? {
+        id: submission.requestedBy.id ?? null,
+        username: submission.requestedBy.username ?? null,
+        realName: submission.requestedBy.realName ?? null,
+      }
+    : { id: null, username: null, realName: null };
 
   return {
     baseAsset: {
@@ -221,7 +285,106 @@ export function createSubmissionContext(submission) {
     operation: submission?.operation ?? null,
     submittedAt: submission?.submittedAt ?? new Date().toISOString(),
     results,
-    statuses: [],
-    pendingStatusCheck: false,
+    statuses,
+    pendingStatusCheck: Boolean(submission?.pendingStatusCheck),
+    pendingRequest: Boolean(submission?.pendingRequest),
+    requestedBy,
+    responseMode:
+      submission?.responseMode === "ephemeral" ? "ephemeral" : "update",
+  };
+}
+
+function buildChannelButtonBlock(context) {
+  const buttonContext = {
+    ...context,
+    pendingRequest: false,
+    statuses: Array.isArray(context?.statuses) ? context.statuses : [],
+    responseMode: "ephemeral",
+  };
+  const isPending = Boolean(context?.pendingStatusCheck);
+
+  return {
+    type: "actions",
+    block_id: "uplogd_status_actions",
+    elements: [
+      {
+        type: "button",
+        action_id: ACTION_IDS.statusCheck,
+        style: "primary",
+        text: {
+          type: "plain_text",
+          text: isPending
+            ? ":hourglass_flowing_sand: Checking status…"
+            : "Check status",
+        },
+        value: encodeButtonValue({
+          ...buttonContext,
+          pendingStatusCheck: isPending,
+        }),
+      },
+    ],
+  };
+}
+
+export function buildChannelSummaryMessage(context) {
+  const summaryContext = {
+    ...context,
+    pendingRequest: false,
+    responseMode: "ephemeral",
+  };
+  const { operationKeyword, requestedByLabel, assetLabelPlain } =
+    buildSummaryParts(summaryContext);
+  const summaryLine = `${requestedByLabel} sent a \`${operationKeyword} uplogd\` request for \`${assetLabelPlain}\``;
+
+  return {
+    text: summaryLine,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: summaryLine,
+        },
+      },
+      buildChannelButtonBlock(summaryContext),
+    ],
+  };
+}
+
+export function buildStatusOnlyMessage(context) {
+  const assetLabel =
+    context.baseAsset?.label ?? context.baseAsset?.id ?? "Unknown asset";
+  const assetLabelUpper = String(assetLabel).toUpperCase();
+  const statusFields =
+    Array.isArray(context.statuses) && context.statuses.length > 0
+      ? context.statuses.map(({ machine, responseSummary, success }) => {
+          const machineLabel = formatMachineLabel(machine);
+          const summary = responseSummary ?? (success ? "success" : "failed");
+          return {
+            type: "mrkdwn",
+            text: `*${machineLabel}*\n${summary}`,
+          };
+        })
+      : [];
+
+  return {
+    text: `Latest status for ${assetLabelUpper}`,
+    blocks:
+      statusFields.length > 0
+        ? [
+            {
+              type: "section",
+              fields: statusFields,
+            },
+          ]
+        : [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "_No status results yet._",
+              },
+            },
+          ],
   };
 }

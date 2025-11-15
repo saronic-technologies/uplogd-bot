@@ -9,9 +9,14 @@ import {
 } from "./ui/modal.js";
 import {
   buildSubmissionMessage,
+  buildChannelSummaryMessage,
+  buildStatusOnlyMessage,
   createSubmissionContext,
 } from "./ui/message.js";
-import { submitFormPayload } from "./util/submitForm.js";
+import {
+  prepareSubmissionDetails,
+  submitFormPayload,
+} from "./util/submitForm.js";
 import { fetchAssets } from "./util/fetchAssets.js";
 import { fetchStatus } from "./util/fetchStatus.js";
 
@@ -142,29 +147,115 @@ async function start() {
     await ack();
 
     try {
+      const preparedSubmission = await prepareSubmissionDetails({ view, logger });
+
+      if (!preparedSubmission) {
+        return;
+      }
+
+      const dmChannelOverride = process.env.UPLOGD_DM_RECIPIENT || null;
+      const dmChannel = dmChannelOverride || body.user?.id || null;
+      const updatesChannel = process.env.UPLOGD_UPDATES_CHANNEL || null;
+      const requestedBy = {
+        id: body.user?.id ?? null,
+        username: body.user?.username ?? null,
+        realName: body.user?.real_name ?? body.user?.name ?? null,
+      };
+
+      const pendingResults = preparedSubmission.machineTargets.map(
+        ({ assetId, machine }) => ({
+          assetId,
+          machine,
+          success: null,
+          responseSummary: "Waiting for uplogd…",
+        })
+      );
+
+      let dmMessage;
+      let dmMessageChannel;
+
+      if (dmChannel) {
+        const pendingContext = createSubmissionContext({
+          ...preparedSubmission,
+          results: pendingResults,
+          pendingRequest: true,
+          requestedBy,
+          responseMode: "update",
+        });
+        const pendingMessage = buildSubmissionMessage(pendingContext);
+
+        try {
+          dmMessage = await client.chat.postMessage({
+            channel: dmChannel,
+            ...pendingMessage,
+          });
+          dmMessageChannel = dmMessage?.channel ?? dmChannel;
+        } catch (dmError) {
+          logger.error("Failed to send initial DM", dmError);
+        }
+      } else {
+        logger.warn("Unable to DM submission summary: missing user id");
+      }
+
+      if (updatesChannel) {
+        const channelContext = createSubmissionContext({
+          ...preparedSubmission,
+          results: pendingResults,
+          requestedBy,
+          responseMode: "ephemeral",
+        });
+        const channelMessage = buildChannelSummaryMessage(channelContext);
+
+        try {
+          await client.chat.postMessage({
+            channel: updatesChannel,
+            ...channelMessage,
+          });
+        } catch (channelError) {
+          logger.error("Failed to post update to channel", channelError);
+        }
+      }
+
       const summary = await submitFormPayload({
         user: body.user,
         team: body.team,
         view,
         logger,
+        preparedSubmission,
       });
 
       if (!summary) {
         return;
       }
 
-      const context = createSubmissionContext(summary);
-      const message = buildSubmissionMessage(context);
-      const channel = body.user?.id;
+      const finalContext = createSubmissionContext({
+        ...summary,
+        pendingRequest: false,
+        requestedBy: summary?.requestedBy?.id ? summary.requestedBy : requestedBy,
+        responseMode: "update",
+      });
+      const finalMessage = buildSubmissionMessage(finalContext);
 
-      if (!channel) {
-        logger.warn("Unable to send submission summary: missing user id");
+      if (!dmChannel) {
+        return;
+      }
+
+      if (!dmChannel) {
+        return;
+      }
+
+      if (dmMessage?.ts && dmMessageChannel) {
+        await client.chat.update({
+          channel: dmMessageChannel,
+          ts: dmMessage.ts,
+          ...finalMessage,
+        });
         return;
       }
 
       await client.chat.postMessage({
-        channel,
-        ...message,
+        channel: dmChannel,
+        ...finalMessage,
       });
     } catch (error) {
       logger.error("Failed to forward modal submission", error);
@@ -173,7 +264,7 @@ async function start() {
 
   app.action(
     ACTION_IDS.statusCheck,
-    async ({ ack, body, client, logger }) => {
+    async ({ ack, body, client, logger, respond }) => {
       await ack();
 
       const action = body.actions?.[0];
@@ -192,6 +283,12 @@ async function start() {
         return;
       }
 
+      const responseMode =
+        context?.responseMode === "ephemeral" ? "ephemeral" : "update";
+      if (context?.pendingStatusCheck) {
+        logger.info("Status check requested while previous check in progress.");
+        return;
+      }
       const targets = Array.isArray(context?.results) ? context.results : [];
 
       if (targets.length === 0) {
@@ -206,26 +303,51 @@ async function start() {
         body.user?.id;
       const ts = body.message?.ts;
 
-      if (!channel || !ts) {
+      if (responseMode === "update" && (!channel || !ts)) {
         logger.warn("Cannot update status message: missing channel or ts");
         return;
       }
 
-      const previousStatuses = Array.isArray(context?.statuses)
-        ? context.statuses
-        : [];
-      context.pendingStatusCheck = true;
-      context.statuses = previousStatuses;
+      if (responseMode === "ephemeral" && (!channel || !body.user?.id)) {
+        logger.warn("Cannot send ephemeral status: missing channel or user");
+        return;
+      }
 
-      try {
-        const progressMessage = buildSubmissionMessage(context);
-        await client.chat.update({
-          channel,
-          ts,
-          ...progressMessage,
+      const baseContext = {
+        ...context,
+        statuses: Array.isArray(context?.statuses) ? context.statuses : [],
+      };
+
+      if (responseMode === "update") {
+        const progressMessage = buildSubmissionMessage({
+          ...baseContext,
+          pendingStatusCheck: true,
         });
-      } catch (updateError) {
-        logger.error("Failed to show status progress indicator", updateError);
+
+        try {
+          await client.chat.update({
+            channel,
+            ts,
+            ...progressMessage,
+          });
+        } catch (updateError) {
+          logger.error("Failed to show status progress indicator", updateError);
+        }
+      } else {
+        const channelProgress = buildChannelSummaryMessage({
+          ...baseContext,
+          pendingStatusCheck: true,
+        });
+
+        try {
+          await client.chat.update({
+            channel,
+            ts,
+            ...channelProgress,
+          });
+        } catch (channelUpdateError) {
+          logger.error("Failed to show channel status progress", channelUpdateError);
+        }
       }
 
       const checkedAt = new Date().toISOString();
@@ -263,14 +385,47 @@ async function start() {
         };
       });
 
-      context.statuses = statuses;
-      context.pendingStatusCheck = false;
-      const message = buildSubmissionMessage(context);
+      const finalContext = {
+        ...baseContext,
+        statuses,
+        pendingStatusCheck: false,
+      };
+
+      if (responseMode === "update") {
+        const message = buildSubmissionMessage(finalContext);
+        await client.chat.update({
+          channel,
+          ts,
+          ...message,
+        });
+        return;
+      }
 
       await client.chat.update({
         channel,
         ts,
-        ...message,
+        ...buildChannelSummaryMessage(finalContext),
+      });
+
+      const finalEphemeral = buildStatusOnlyMessage(finalContext);
+
+      if (typeof respond === "function") {
+        try {
+          await respond({
+            response_type: "ephemeral",
+            replace_original: false,
+            ...finalEphemeral,
+          });
+          return;
+        } catch (finalRespondError) {
+          logger.error("Failed to send final status via respond", finalRespondError);
+        }
+      }
+
+      await client.chat.postEphemeral({
+        channel,
+        user: body.user?.id,
+        ...finalEphemeral,
       });
     }
   );

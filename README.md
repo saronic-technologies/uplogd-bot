@@ -30,15 +30,17 @@ Slack app scaffold that runs entirely in Socket Mode, opens a modal from a globa
    | `API_ENDPOINT` | **Required.** URL that receives the form data. |
    | `API_AUTH_TOKEN` | Optional bearer token added to the outbound request. |
    | `SHORTCUT_CALLBACK_ID` | Optional. Defaults to `manage_uplogd`. Must match your global shortcut callback ID. |
-   | `ASSETS_ENDPOINT` | **Required.** URL returning a list of assets used to populate the modal dropdown. |
-   | `ASSETS_AUTH_TOKEN` | Optional bearer token used when fetching assets. |
+| `ASSETS_ENDPOINT` | **Required.** URL returning a list of assets used to populate the modal dropdown. |
+| `ASSETS_AUTH_TOKEN` | Optional bearer token used when fetching assets. |
+| `UPLOGD_UPDATES_CHANNEL` | Optional channel ID (e.g. `C01234567`). When set, the bot posts submission updates there instead of DMing the user. |
+| `UPLOGD_DM_RECIPIENT` | Optional user ID (e.g. `U0123ABCD`). When set, the bot sends DM summaries to this user instead of the requester. |
 
 3. Create the Slack app (or open your existing one):
 
    - Enable **Socket Mode** and generate an app-level token with the `connections:write` scope.
    - Enable **Interactivity & Shortcuts** (no public URL needed when using Socket Mode).
    - Add a **Global Shortcut** whose callback ID matches `SHORTCUT_CALLBACK_ID` (default `manage_uplogd`).
-   - Add the following bot scopes: `commands`, `chat:write`, and any additional scopes you need.
+   - Add the following bot scopes: `commands`, `chat:write`, and any additional scopes you need. Include `chat:write.public` if you plan to post into public channels the bot hasn't joined yet.
    - Install the app to your workspace and copy the credentials into your `.env` file.
 
 ## Running locally
@@ -70,6 +72,7 @@ The project includes a PM2 script that keeps the bot running on a server:
 
 - The global shortcut fires `src/app.js`, which fetches assets from `ASSETS_ENDPOINT`, then opens the modal defined in `src/modal.js`.
 - When the user submits the modal, `src/services/submitForm.js` serializes the selected asset, which targets (`imx8`/`crystal`) were checked, and the chosen action (`start`, `stop`, `restart`), then sends them to `API_ENDPOINT` via `axios`.
+- The bot DMs the requester immediately, then edits that DM with the SSH response once the external API call returns. When `UPLOGD_UPDATES_CHANNEL` is set, it also posts a one-line announcement with a status button to that channel; status checks there reply via ephemeral messages so the public post stays clean.
 - A bearer token header is added when `API_AUTH_TOKEN` is provided.
 
 You can extend the modal blocks or adjust the payload transformation inside `submitFormPayload` to match your API contract.
