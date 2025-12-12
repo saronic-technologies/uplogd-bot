@@ -13,12 +13,17 @@ import {
   buildStatusOnlyMessage,
   createSubmissionContext,
 } from "./ui/message.js";
+import { buildForecastMessage } from "./ui/forecast.js";
 import {
   prepareSubmissionDetails,
   submitFormPayload,
 } from "./util/submitForm.js";
 import { fetchAssets } from "./util/fetchAssets.js";
 import { fetchStatus } from "./util/fetchStatus.js";
+import { fetchTodaysTides } from "./util/fetchTides.js";
+import { fetchSunTimes } from "./util/fetchSunTimes.js";
+import { fetchWaves } from "./util/fetchWaves.js";
+import { fetchWeather } from "./util/fetchWeather.js";
 
 const { App, LogLevel } = bolt;
 const requiredEnv = [
@@ -27,6 +32,8 @@ const requiredEnv = [
   "SLACK_APP_TOKEN",
 ];
 const shortcutCallbackId = process.env.SHORTCUT_CALLBACK_ID || "manage_uplogd";
+const sdForecastCommand = process.env.SD_FORECAST_COMMAND || "/sdforecast";
+const sdForecastChannel = process.env.SD_FORECAST_CHANNEL || null;
 let app;
 
 function ensureEnv() {
@@ -71,6 +78,179 @@ function setupShutdownHandlers() {
         process.kill(process.pid, "SIGUSR2");
       });
   });
+}
+
+function toResult(settled) {
+  if (!settled) {
+    return null;
+  }
+  if (settled.status === "fulfilled") {
+    return settled.value;
+  }
+  const error = settled.reason;
+  return {
+    success: false,
+    status: error?.response?.status ?? null,
+    error: error?.message ?? "Failed",
+    data: error?.response?.data ?? null,
+  };
+}
+
+function normalizeAncillary(raw) {
+  if (!raw) return null;
+  if (raw.success === undefined) {
+    return { success: true, status: 200, data: raw };
+  }
+  return raw;
+}
+
+async function collectForecast({ logger }) {
+  const [waveResult, weatherResult, tidesResult, sunResult] =
+    await Promise.allSettled([
+      fetchWaves({ logger }),
+      fetchWeather({ logger }),
+      fetchTodaysTides({ logger }),
+      fetchSunTimes({ logger }),
+    ]);
+
+  const wave = toResult(waveResult);
+  const weather = toResult(weatherResult);
+  const tides = normalizeAncillary(toResult(tidesResult));
+  const sun = normalizeAncillary(toResult(sunResult));
+
+  if (wave && !wave.success) {
+    logger?.error?.("Failed to fetch SD wave data", wave.error ?? wave);
+  }
+  if (weather && !weather.success) {
+    logger?.error?.("Failed to fetch SD weather data", weather.error ?? weather);
+  }
+  if (tides && !tides.success) {
+    logger?.error?.("Failed to fetch SD tides data", tides.error ?? tides);
+  }
+  if (sun && !sun.success) {
+    logger?.error?.("Failed to fetch SD sun data", sun.error ?? sun);
+  }
+
+  return { wave, weather, tides, sun };
+}
+
+function msUntilNextHour(hour = 8) {
+  const now = new Date();
+  const target = new Date(now);
+  target.setHours(hour, 0, 0, 0);
+  if (target <= now) {
+    target.setDate(target.getDate() + 1);
+  }
+  return target.getTime() - now.getTime();
+}
+
+function msUntilNextTime(hour, minute = 0) {
+  const now = new Date();
+  const target = new Date(now);
+  target.setHours(hour, minute, 0, 0);
+  if (target <= now) {
+    target.setDate(target.getDate() + 1);
+  }
+  return target.getTime() - now.getTime();
+}
+
+function scheduleDailyForecast({ client, logger }) {
+  if (!sdForecastChannel) {
+    logger?.info?.("SD_FORECAST_CHANNEL not set; skipping daily forecast schedule.");
+    return;
+  }
+
+  const scheduleNext = () => {
+    const delay = msUntilNextHour(8);
+    setTimeout(async () => {
+      try {
+        const today = new Date();
+        const day = today.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+        const isWeekday = day >= 1 && day <= 5;
+
+        if (isWeekday) {
+          const forecast = await collectForecast({ logger });
+          const message = buildForecastMessage(forecast);
+          await client.chat.postMessage({
+            channel: sdForecastChannel,
+            text: message.text,
+            blocks: message.blocks,
+          });
+          logger?.info?.("Posted scheduled forecast to channel", {
+            channel: sdForecastChannel,
+          });
+        } else {
+          logger?.info?.("Skipping scheduled forecast (weekend).");
+        }
+      } catch (error) {
+        logger?.error?.("Failed to post scheduled forecast", error);
+      } finally {
+        scheduleNext();
+      }
+    }, delay);
+  };
+
+  scheduleNext();
+}
+
+function parseOneTimeSchedule(text) {
+  if (!text) return null;
+  const normalized = text.trim();
+  const withoutKeyword = normalized.replace(/^schedule\s*/i, "").trim();
+  if (!withoutKeyword) return null;
+
+  const inMatch = withoutKeyword.match(/^in\s+(\d+)\s*(m|min|mins|minutes)?$/i);
+  if (inMatch) {
+    const minutes = Number(inMatch[1]);
+    if (!Number.isNaN(minutes) && minutes > 0) {
+      return {
+        delayMs: minutes * 60 * 1000,
+        label: `in ${minutes}m`,
+      };
+    }
+  }
+
+  const atMatch = withoutKeyword.match(/^(?:at\s*)?(\d{1,2}):(\d{2})$/i);
+  if (atMatch) {
+    const hour = Number(atMatch[1]);
+    const minute = Number(atMatch[2]);
+    if (
+      Number.isInteger(hour) &&
+      Number.isInteger(minute) &&
+      hour >= 0 &&
+      hour <= 23 &&
+      minute >= 0 &&
+      minute <= 59
+    ) {
+      const delayMs = msUntilNextTime(hour, minute);
+      const paddedMinute = String(minute).padStart(2, "0");
+      return {
+        delayMs,
+        label: `at ${hour}:${paddedMinute} (local)`,
+      };
+    }
+  }
+
+  return null;
+}
+
+function scheduleOneTimeForecast({ client, logger, channel, delayMs }) {
+  setTimeout(async () => {
+    try {
+      const forecast = await collectForecast({ logger });
+      const message = buildForecastMessage(forecast);
+      await client.chat.postMessage({
+        channel,
+        text: message.text,
+        blocks: message.blocks,
+      });
+      logger?.info?.("Posted one-time scheduled forecast", {
+        channel,
+      });
+    } catch (error) {
+      logger?.error?.("Failed to post one-time scheduled forecast", error);
+    }
+  }, delayMs);
 }
 
 
@@ -430,9 +610,45 @@ async function start() {
     }
   );
 
+  app.command(sdForecastCommand, async ({ ack, respond, logger, body }) => {
+    await ack();
+
+    try {
+      const commandText = (body?.text ?? "").trim();
+      const schedule = parseOneTimeSchedule(commandText);
+
+      if (schedule && body?.channel_id) {
+        scheduleOneTimeForecast({
+          client: app.client,
+          logger,
+          channel: body.channel_id,
+          delayMs: schedule.delayMs,
+        });
+        await respond({
+          response_type: "ephemeral",
+          text: `Scheduled forecast ${schedule.label} for <#${body.channel_id}>.`,
+        });
+        return;
+      }
+
+      const forecast = await collectForecast({ logger });
+      const message = buildForecastMessage(forecast);
+      await respond(message);
+    } catch (error) {
+      logger.error("Failed to fulfill /sdforecast request", error);
+      await respond({
+        response_type: "ephemeral",
+        text:
+          "Unable to fetch San Diego forecast right now. Try again in a moment.",
+      });
+    }
+  });
+
   await app.start();
   // eslint-disable-next-line no-console
   console.log("⚡️ Slack Bolt app (Socket Mode) is running!");
+
+  scheduleDailyForecast({ client: app.client, logger: app.logger });
 }
 
 start().catch((error) => {
