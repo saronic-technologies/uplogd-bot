@@ -74,21 +74,36 @@ function buildWindSpeedKtsString(speed) {
 
 function directionArrow(direction) {
   const map = {
-    N: "⬆️",
-    NE: "↗️",
-    E: "➡️",
-    SE: "↘️",
-    S: "⬇️",
-    SW: "↙️",
-    W: "⬅️",
-    NW: "↖️",
+    N: "⬇️",
+    NE: "↙️",
+    E: "⬅️",
+    SE: "↖️",
+    S: "⬆️",
+    SW: "↗️",
+    W: "➡️",
+    NW: "↘️",
   };
   return map[direction?.toUpperCase()] || "";
 }
 
 function formatClock(timeStr) {
   if (!timeStr) return "N/A";
-  const date = new Date(timeStr.replace(" ", "T"));
+
+  // Tides/sunrise APIs return local Pacific times without a timezone; format those
+  // strings directly so we do not re-interpret them in the host server timezone.
+  const localMatch = String(timeStr)
+    .trim()
+    .replace("T", " ")
+    .match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (localMatch) {
+    const hour24 = Number(localMatch[4]);
+    const minute = localMatch[5].padStart(2, "0");
+    const hour12 = ((hour24 + 11) % 12) + 1;
+    const period = hour24 >= 12 ? "PM" : "AM";
+    return `${hour12}:${minute} ${period}`;
+  }
+
+  const date = new Date(String(timeStr).replace(" ", "T"));
 
   if (Number.isNaN(date.getTime())) {
     return timeStr;
@@ -344,19 +359,7 @@ export function buildForecastMessage({ wave, weather, tides, sun }) {
         fields: [
           {
             type: "mrkdwn",
-            text: "🏝️ *Tides:*",
-          },
-          {
-            type: "mrkdwn",
-            text: " ",
-          },
-          {
-            type: "mrkdwn",
-            text: `*High:*\n${tideLines.high}`,
-          },
-          {
-            type: "mrkdwn",
-            text: `*Low:*\n${tideLines.low}`,
+            text: `🏝️ *Tides:*\n*High:*\n${tideLines.high}\n*Low:*\n${tideLines.low}`,
           },
         ],
       },

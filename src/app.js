@@ -26,6 +26,7 @@ import { fetchWaves } from "./util/fetchWaves.js";
 import { fetchWeather } from "./util/fetchWeather.js";
 
 const { App, LogLevel } = bolt;
+const PACIFIC_TIME_ZONE = "America/Los_Angeles";
 const requiredEnv = [
   "SLACK_SIGNING_SECRET",
   "SLACK_BOT_TOKEN",
@@ -135,22 +136,108 @@ async function collectForecast({ logger }) {
 }
 
 function msUntilNextHour(hour = 8) {
-  const now = new Date();
-  const target = new Date(now);
-  target.setHours(hour, 0, 0, 0);
-  if (target <= now) {
-    target.setDate(target.getDate() + 1);
-  }
-  return target.getTime() - now.getTime();
+  return msUntilNextTime(hour, 0);
+}
+
+function getTimeZoneParts(date = new Date(), timeZone = PACIFIC_TIME_ZONE) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+
+  const parts = formatter
+    .formatToParts(date)
+    .filter((part) => part.type !== "literal")
+    .reduce((acc, part) => ({ ...acc, [part.type]: Number(part.value) }), {});
+
+  return {
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: parts.hour,
+    minute: parts.minute,
+    second: parts.second ?? 0,
+  };
+}
+
+function getTimeZoneOffsetMs(timeZone, date = new Date()) {
+  const parts = getTimeZoneParts(date, timeZone);
+  const asUTC = Date.UTC(
+    parts.year,
+    (parts.month ?? 1) - 1,
+    parts.day ?? 1,
+    parts.hour ?? 0,
+    parts.minute ?? 0,
+    parts.second ?? 0
+  );
+  return asUTC - date.getTime();
+}
+
+function zonedDate(timeZone, parts) {
+  const utcGuess = Date.UTC(
+    parts.year,
+    (parts.month ?? 1) - 1,
+    parts.day ?? 1,
+    parts.hour ?? 0,
+    parts.minute ?? 0,
+    parts.second ?? 0,
+    parts.ms ?? 0
+  );
+  const offset = getTimeZoneOffsetMs(timeZone, new Date(utcGuess));
+  return new Date(utcGuess - offset);
+}
+
+function getPacificNow() {
+  return zonedDate(PACIFIC_TIME_ZONE, getTimeZoneParts(new Date(), PACIFIC_TIME_ZONE));
+}
+
+function formatPacificDateTime(date) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: PACIFIC_TIME_ZONE,
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  });
+  return formatter.format(date);
 }
 
 function msUntilNextTime(hour, minute = 0) {
   const now = new Date();
-  const target = new Date(now);
-  target.setHours(hour, minute, 0, 0);
-  if (target <= now) {
-    target.setDate(target.getDate() + 1);
+  const pacificNow = getPacificNow();
+  const pacificParts = getTimeZoneParts(pacificNow, PACIFIC_TIME_ZONE);
+
+  const targetToday = zonedDate(PACIFIC_TIME_ZONE, {
+    ...pacificParts,
+    hour,
+    minute,
+    second: 0,
+    ms: 0,
+  });
+
+  let target = targetToday;
+  if (target <= pacificNow) {
+    const tomorrowParts = getTimeZoneParts(
+      new Date(pacificNow.getTime() + 24 * 60 * 60 * 1000),
+      PACIFIC_TIME_ZONE
+    );
+    target = zonedDate(PACIFIC_TIME_ZONE, {
+      ...tomorrowParts,
+      hour,
+      minute,
+      second: 0,
+      ms: 0,
+    });
   }
+
   return target.getTime() - now.getTime();
 }
 
@@ -162,6 +249,11 @@ function scheduleDailyForecast({ client, logger }) {
 
   const scheduleNext = () => {
     const delay = msUntilNextHour(8);
+    const nextFire = new Date(Date.now() + delay);
+    logger?.info?.("Scheduling next daily forecast", {
+      pacificFireTime: formatPacificDateTime(nextFire),
+      delayMs: delay,
+    });
     setTimeout(async () => {
       try {
         const today = new Date();
@@ -226,7 +318,7 @@ function parseOneTimeSchedule(text) {
       const paddedMinute = String(minute).padStart(2, "0");
       return {
         delayMs,
-        label: `at ${hour}:${paddedMinute} (local)`,
+        label: `at ${hour}:${paddedMinute} (Pacific)`,
       };
     }
   }
