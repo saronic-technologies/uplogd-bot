@@ -193,7 +193,9 @@ function formatWaves(wave) {
   }
 
   const heightField = getWaveField(wave.parsed, "WVHT");
-  const periodField = getWaveField(wave.parsed, "DPD");
+  // Prefer average period (APD); fall back to dominant (DPD) if missing.
+  const periodField =
+    getWaveField(wave.parsed, "APD") || getWaveField(wave.parsed, "DPD");
   const dirField = getWaveField(wave.parsed, "MWD");
 
   const heightFt = metersToFeet(heightField?.value ?? null);
