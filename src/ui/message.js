@@ -18,9 +18,9 @@ function getOperationKeyword(operation) {
   return String(operation).toLowerCase();
 }
 
-function formatMachineLabel(machine) {
+function formatMachineLabel(machine, fallbackLabel = "auto") {
   if (!machine) {
-    return "auto";
+    return fallbackLabel;
   }
 
   if (machine === MACHINE_VALUES.primary) {
@@ -32,6 +32,21 @@ function formatMachineLabel(machine) {
   }
 
   return String(machine);
+}
+
+function getServiceLabel(context) {
+  return context?.serviceLabel ?? "uplogd";
+}
+
+function getGarageDevices(context) {
+  if (context?.statusKind !== "garage_mode") {
+    return null;
+  }
+  const statuses = Array.isArray(context?.statuses) ? context.statuses : [];
+  const matched = statuses.find(
+    (item) => Array.isArray(item?.devices) && item.devices.length > 0
+  );
+  return matched?.devices ?? null;
 }
 
 function sanitizeContextForButton(context) {
@@ -65,6 +80,9 @@ function sanitizeContextForButton(context) {
       : [],
     pendingStatusCheck: Boolean(context?.pendingStatusCheck),
     pendingRequest: Boolean(context?.pendingRequest),
+    serviceLabel: context?.serviceLabel ?? null,
+    statusKind: context?.statusKind ?? null,
+    machineLabel: context?.machineLabel ?? null,
     requestedBy: context?.requestedBy
       ? {
           id: context.requestedBy.id ?? null,
@@ -93,7 +111,10 @@ function buildSummaryParts(context) {
   const operationKeyword =
     getOperationKeyword(context.operation) || actionLabel.toLowerCase();
   const requestedByLabel = getRequestedByLabel(context.requestedBy);
-  const summaryLine = `${requestedByLabel} sent a ${operationKeyword} uplogd request for *${assetLabelUpper}*`;
+  const serviceLabel = getServiceLabel(context);
+  const summaryLine =
+    context?.summaryLine ??
+    `${requestedByLabel} sent a ${operationKeyword} ${serviceLabel} request for *${assetLabelUpper}*`;
 
   return {
     actionLabel,
@@ -102,6 +123,7 @@ function buildSummaryParts(context) {
     assetLabelPlain: String(assetLabel),
     operationKeyword,
     requestedByLabel,
+    serviceLabel,
     summaryLine,
   };
 }
@@ -120,13 +142,19 @@ export function buildSubmissionMessage(context) {
     assetLabelUpper,
     operationKeyword,
     requestedByLabel,
+    serviceLabel,
     summaryLine,
   } = buildSummaryParts(context);
+  const machineLabelFallback = context?.machineLabel ?? "auto";
+  const isGarageStatusOnly =
+    context?.statusKind === "garage_mode" && context?.operation === "status";
 
   const requestFields =
-    Array.isArray(context.results) && context.results.length > 0
+    !isGarageStatusOnly &&
+    Array.isArray(context.results) &&
+    context.results.length > 0
       ? context.results.map(({ machine, success }) => {
-          const machineLabel = formatMachineLabel(machine);
+          const machineLabel = formatMachineLabel(machine, machineLabelFallback);
           const outcome =
             success === true
               ? "succeeded"
@@ -135,22 +163,32 @@ export function buildSubmissionMessage(context) {
               : "in progress";
           return {
             type: "mrkdwn",
-            text: `*${machineLabel}*\n${operationKeyword} uplogd ${outcome}`,
+            text: `*${machineLabel}* ${operationKeyword} ${serviceLabel} ${outcome}`,
           };
         })
       : [];
 
-  const statusFields =
-    Array.isArray(context.statuses) && context.statuses.length > 0
-      ? context.statuses.map(({ machine, responseSummary, success }) => {
-          const machineLabel = formatMachineLabel(machine);
-          const summary = responseSummary ?? (success ? "success" : "failed");
-          return {
-            type: "mrkdwn",
-            text: `*${machineLabel}*\n${summary}`,
-          };
-        })
-      : [];
+  const garageDevices = getGarageDevices(context);
+  const statusFields = garageDevices
+    ? garageDevices.map((device) => {
+        const label = device.device ?? "device";
+        const summary = device.state ?? "unknown";
+        const notes = device.notes ? ` (${device.notes})` : "";
+        return {
+          type: "mrkdwn",
+          text: `*${label}* ${summary}${notes}`,
+        };
+      })
+    : Array.isArray(context.statuses) && context.statuses.length > 0
+    ? context.statuses.map(({ machine, responseSummary, success }) => {
+        const machineLabel = formatMachineLabel(machine, machineLabelFallback);
+        const summary = responseSummary ?? (success ? "success" : "failed");
+        return {
+          type: "mrkdwn",
+          text: `*${machineLabel}* ${summary}`,
+        };
+      })
+    : [];
 
   const previewTimestamp = formatPreviewTimestamp(context.submittedAt);
   const blocks = [
@@ -159,27 +197,32 @@ export function buildSubmissionMessage(context) {
       text: { type: "plain_text", text: assetLabelUpper },
     },
     { type: "divider" },
-    requestFields.length > 0
-      ? {
-          type: "section",
-          fields: requestFields,
-        }
-      : {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: "_No requests were sent._",
-          },
-        },
-    { type: "divider" },
   ];
+
+  if (!isGarageStatusOnly) {
+    blocks.push(
+      requestFields.length > 0
+        ? {
+            type: "section",
+            fields: requestFields,
+          }
+        : {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: "_No requests were sent._",
+            },
+          },
+      { type: "divider" }
+    );
+  }
 
   if (context.pendingRequest) {
     blocks.push({
       type: "section",
       text: {
         type: "mrkdwn",
-        text: ":hourglass_flowing_sand: Request sent. Waiting for uplogd to confirm the SSH action…",
+        text: `:hourglass_flowing_sand: Request sent. Waiting for ${serviceLabel} to confirm the request…`,
       },
     });
     blocks.push({ type: "divider" });
@@ -232,7 +275,7 @@ export function buildSubmissionMessage(context) {
 
 
   return {
-    text: `${requestedByLabel} sent a ${operationKeyword} uplogd request for ${assetLabelUpper}`,
+    text: `${requestedByLabel} sent a ${operationKeyword} ${serviceLabel} request for ${assetLabelUpper}`,
     blocks,
   };
 }
@@ -266,6 +309,7 @@ export function createSubmissionContext(submission) {
           typeof item?.statusCode === "number" ? item.statusCode : null,
         responseSummary: item?.responseSummary ?? null,
         checkedAt: item?.checkedAt ?? null,
+        devices: Array.isArray(item?.devices) ? item.devices : undefined,
       }))
     : [];
 
@@ -288,6 +332,10 @@ export function createSubmissionContext(submission) {
     statuses,
     pendingStatusCheck: Boolean(submission?.pendingStatusCheck),
     pendingRequest: Boolean(submission?.pendingRequest),
+    serviceLabel: submission?.serviceLabel ?? null,
+    statusKind: submission?.statusKind ?? null,
+    machineLabel: submission?.machineLabel ?? null,
+    summaryLine: submission?.summaryLine ?? null,
     requestedBy,
     responseMode:
       submission?.responseMode === "ephemeral" ? "ephemeral" : "update",
@@ -334,7 +382,10 @@ export function buildChannelSummaryMessage(context) {
   };
   const { operationKeyword, requestedByLabel, assetLabelPlain } =
     buildSummaryParts(summaryContext);
-  const summaryLine = `${requestedByLabel} sent a \`${operationKeyword} uplogd\` request for \`${assetLabelPlain}\``;
+  const serviceLabel = getServiceLabel(summaryContext);
+  const summaryLine =
+    summaryContext?.summaryLine ??
+    `${requestedByLabel} sent a \`${operationKeyword} ${serviceLabel}\` request for \`${assetLabelPlain}\``;
 
   return {
     text: summaryLine,
@@ -355,17 +406,29 @@ export function buildStatusOnlyMessage(context) {
   const assetLabel =
     context.baseAsset?.label ?? context.baseAsset?.id ?? "Unknown asset";
   const assetLabelUpper = String(assetLabel).toUpperCase();
-  const statusFields =
-    Array.isArray(context.statuses) && context.statuses.length > 0
-      ? context.statuses.map(({ machine, responseSummary, success }) => {
-          const machineLabel = formatMachineLabel(machine);
-          const summary = responseSummary ?? (success ? "success" : "failed");
-          return {
-            type: "mrkdwn",
-            text: `*${machineLabel}*\n${summary}`,
-          };
-        })
-      : [];
+  const machineLabelFallback = context?.machineLabel ?? "auto";
+  const garageDevices = getGarageDevices(context);
+
+  const statusFields = garageDevices
+    ? garageDevices.map((device) => {
+        const label = device.device ?? "device";
+        const summary = device.state ?? "unknown";
+        const notes = device.notes ? ` (${device.notes})` : "";
+        return {
+          type: "mrkdwn",
+          text: `*${label}* ${summary}${notes}`,
+        };
+      })
+    : Array.isArray(context.statuses) && context.statuses.length > 0
+    ? context.statuses.map(({ machine, responseSummary, success }) => {
+        const machineLabel = formatMachineLabel(machine, machineLabelFallback);
+        const summary = responseSummary ?? (success ? "success" : "failed");
+        return {
+          type: "mrkdwn",
+          text: `*${machineLabel}* ${summary}`,
+        };
+      })
+    : [];
 
   return {
     text: `Latest status for ${assetLabelUpper}`,

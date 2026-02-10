@@ -3,7 +3,9 @@ import bolt from "@slack/bolt";
 import {
   ACTION_IDS,
   buildErrorModal,
+  buildGarageModeModal,
   buildSubmissionModal,
+  GARAGE_MODE_MODAL_CALLBACK_ID,
   MODAL_CALLBACK_ID,
   NO_ASSET_VALUE,
 } from "./ui/modal.js";
@@ -18,8 +20,13 @@ import {
   prepareSubmissionDetails,
   submitFormPayload,
 } from "./util/submitForm.js";
+import {
+  prepareGarageModeSubmission,
+  submitGarageModePayload,
+} from "./util/submitGarageMode.js";
 import { fetchAssets } from "./util/fetchAssets.js";
 import { fetchStatus } from "./util/fetchStatus.js";
+import { fetchGarageModeStatus } from "./util/fetchGarageModeStatus.js";
 import { fetchTodaysTides } from "./util/fetchTides.js";
 import { fetchSunTimes } from "./util/fetchSunTimes.js";
 import { fetchWaves } from "./util/fetchWaves.js";
@@ -33,6 +40,8 @@ const requiredEnv = [
   "SLACK_APP_TOKEN",
 ];
 const shortcutCallbackId = process.env.SHORTCUT_CALLBACK_ID || "manage_uplogd";
+const garageModeShortcutId =
+  process.env.GARAGE_MODE_SHORTCUT_ID || "garage_mode";
 const sdForecastCommand = process.env.SD_FORECAST_COMMAND || "/sdforecast";
 const sdForecastChannel = process.env.SD_FORECAST_CHANNEL || null;
 let app;
@@ -386,6 +395,33 @@ async function start() {
     }
   });
 
+  app.shortcut(garageModeShortcutId, async ({ ack, body, client, logger }) => {
+    await ack();
+
+    try {
+      const assets = await fetchAssets({ logger });
+
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        view: buildGarageModeModal({ userId: body.user?.id, assets }),
+      });
+    } catch (error) {
+      logger.error("Failed to open garage mode modal from shortcut", error);
+
+      try {
+        await client.views.open({
+          trigger_id: body.trigger_id,
+          view: buildErrorModal(
+            "Unable to load assets. Please try again later.",
+            "Garage Mode"
+          ),
+        });
+      } catch (openError) {
+        logger.error("Failed to open garage mode error modal", openError);
+      }
+    }
+  });
+
   app.action(ACTION_IDS.asset, async ({ ack, body, client, logger }) => {
     await ack();
 
@@ -400,15 +436,25 @@ async function start() {
         : {};
       const assets = await fetchAssets({ logger });
 
+      const updatedView =
+        body.view?.callback_id === GARAGE_MODE_MODAL_CALLBACK_ID
+          ? buildGarageModeModal({
+              userId: metadata.openedBy ?? body.user?.id,
+              assets,
+              selectedAssetId,
+              viewState: body.view?.state,
+            })
+          : buildSubmissionModal({
+              userId: metadata.openedBy ?? body.user?.id,
+              assets,
+              selectedAssetId,
+              viewState: body.view?.state,
+            });
+
       await client.views.update({
         view_id: body.view?.id,
         hash: body.view?.hash,
-        view: buildSubmissionModal({
-          userId: metadata.openedBy ?? body.user?.id,
-          assets,
-          selectedAssetId,
-          viewState: body.view?.state,
-        }),
+        view: updatedView,
       });
     } catch (error) {
       logger.error("Failed to update modal after asset selection", error);
@@ -534,6 +580,139 @@ async function start() {
     }
   });
 
+  app.view(
+    GARAGE_MODE_MODAL_CALLBACK_ID,
+    async ({ ack, body, view, client, logger }) => {
+      await ack();
+
+      try {
+        const preparedSubmission = await prepareGarageModeSubmission({
+          view,
+          logger,
+        });
+
+        if (!preparedSubmission) {
+          return;
+        }
+
+        const dmChannelOverride = process.env.UPLOGD_DM_RECIPIENT || null;
+        const dmChannel = dmChannelOverride || body.user?.id || null;
+        const updatesChannel = process.env.UPLOGD_UPDATES_CHANNEL || null;
+        const requestedBy = {
+          id: body.user?.id ?? null,
+          username: body.user?.username ?? null,
+          realName: body.user?.real_name ?? body.user?.name ?? null,
+        };
+
+        const isStatusOnly = preparedSubmission.operation === "status";
+        const pendingResults = isStatusOnly
+          ? []
+          : [
+              {
+                assetId: preparedSubmission.asset.id,
+                machine: null,
+                success: null,
+                responseSummary: "Waiting for garage mode…",
+              },
+            ];
+
+        let dmMessage;
+        let dmMessageChannel;
+
+        if (dmChannel && !isStatusOnly) {
+          const pendingContext = createSubmissionContext({
+            ...preparedSubmission,
+            results: pendingResults,
+            pendingRequest: true,
+            requestedBy,
+            responseMode: "update",
+            serviceLabel: "garage mode",
+            statusKind: "garage_mode",
+            machineLabel: "asset",
+          });
+          const pendingMessage = buildSubmissionMessage(pendingContext);
+
+          try {
+            dmMessage = await client.chat.postMessage({
+              channel: dmChannel,
+              ...pendingMessage,
+            });
+            dmMessageChannel = dmMessage?.channel ?? dmChannel;
+          } catch (dmError) {
+            logger.error("Failed to send initial garage mode DM", dmError);
+          }
+        } else {
+          logger.warn("Unable to DM garage mode summary: missing user id");
+        }
+
+        if (updatesChannel && !isStatusOnly) {
+          const channelContext = createSubmissionContext({
+            ...preparedSubmission,
+            results: pendingResults,
+            requestedBy,
+            responseMode: "ephemeral",
+            serviceLabel: "garage mode",
+            statusKind: "garage_mode",
+            machineLabel: "asset",
+          });
+          const channelMessage = buildChannelSummaryMessage(channelContext);
+
+          try {
+            await client.chat.postMessage({
+              channel: updatesChannel,
+              ...channelMessage,
+            });
+          } catch (channelError) {
+            logger.error("Failed to post garage mode update to channel", channelError);
+          }
+        }
+
+        const summary = await submitGarageModePayload({
+          user: body.user,
+          team: body.team,
+          view,
+          logger,
+          preparedSubmission,
+        });
+
+        if (!summary) {
+          return;
+        }
+
+        const finalContext = createSubmissionContext({
+          ...summary,
+          pendingRequest: false,
+          requestedBy: summary?.requestedBy?.id ? summary.requestedBy : requestedBy,
+          responseMode: "update",
+          serviceLabel: "garage mode",
+          statusKind: "garage_mode",
+          machineLabel: "asset",
+        });
+        const finalMessage = buildSubmissionMessage(finalContext);
+
+        if (!dmChannel) {
+          return;
+        }
+
+        if (dmMessage?.ts && dmMessageChannel) {
+          await client.chat.update({
+            channel: dmMessageChannel,
+            ts: dmMessage.ts,
+            ...finalMessage,
+          });
+          return;
+        }
+
+        await client.chat.postMessage({
+          channel: dmChannel,
+          ...finalMessage,
+        });
+      } catch (error) {
+        logger.error("Failed to forward garage mode submission", error);
+      }
+    }
+  );
+
   app.action(
     ACTION_IDS.statusCheck,
     async ({ ack, body, client, logger, respond }) => {
@@ -623,9 +802,13 @@ async function start() {
       }
 
       const checkedAt = new Date().toISOString();
+      const statusFetcher =
+        context?.statusKind === "garage_mode"
+          ? fetchGarageModeStatus
+          : fetchStatus;
       const statusResults = await Promise.allSettled(
         targets.map((item) =>
-          fetchStatus({
+          statusFetcher({
             assetId: item.assetId,
             machine: item.machine,
             logger,

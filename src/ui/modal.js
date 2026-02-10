@@ -1,4 +1,5 @@
 export const MODAL_CALLBACK_ID = "uplogd-modal";
+export const GARAGE_MODE_MODAL_CALLBACK_ID = "garage-mode-modal";
 
 export const BLOCK_IDS = {
   asset: "asset_block",
@@ -20,12 +21,12 @@ export const MACHINE_VALUES = {
 
 export const NO_ASSET_VALUE = "__no_asset__";
 
-export function buildErrorModal(message) {
+export function buildErrorModal(message, title = "Manage Uplogd") {
   return {
     type: "modal",
     title: {
       type: "plain_text",
-      text: "Manage Uplogd",
+      text: title,
     },
     close: {
       type: "plain_text",
@@ -191,6 +192,45 @@ function buildOperationBlock(selectedOperation) {
   };
 }
 
+function buildGarageModeOperationBlock(selectedOperation) {
+  return {
+    type: "input",
+    block_id: BLOCK_IDS.operation,
+    label: {
+      type: "plain_text",
+      text: "Garage Mode Action",
+    },
+    element: {
+      type: "radio_buttons",
+      action_id: ACTION_IDS.operation,
+      initial_option: selectedOperation
+        ? {
+            text: {
+              type: "plain_text",
+              text: selectedOperation.label,
+              emoji: true,
+            },
+            value: selectedOperation.value,
+          }
+        : undefined,
+      options: [
+        {
+          text: { type: "plain_text", text: "Enter Garage Mode", emoji: true },
+          value: "enter",
+        },
+        {
+          text: { type: "plain_text", text: "Exit Garage Mode", emoji: true },
+          value: "exit",
+        },
+        {
+          text: { type: "plain_text", text: "Status Check", emoji: true },
+          value: "status",
+        },
+      ],
+    },
+  };
+}
+
 function getSelectedOperation(viewState) {
   const selected =
     viewState?.values?.[BLOCK_IDS.operation]?.[ACTION_IDS.operation]
@@ -285,6 +325,74 @@ export function buildSubmissionModal({
       },
       ...machineBlocks,
       buildOperationBlock(selectedOperation),
+    ].filter(Boolean),
+  };
+}
+
+export function buildGarageModeModal({
+  userId,
+  assets,
+  selectedAssetId,
+  viewState,
+}) {
+  const assetOptions = buildAssetOptions(assets);
+  const assetUnavailable = (assets?.length ?? 0) === 0;
+  const selectedAsset =
+    selectedAssetId && assets
+      ? assets.find((item) => item.name === selectedAssetId)
+      : assets?.[0];
+
+  const initialAssetOption =
+    selectedAsset && selectedAsset.name
+      ? {
+          text: { type: "plain_text", text: selectedAsset.name, emoji: true },
+          value: selectedAsset.name,
+        }
+      : undefined;
+
+  const selectedOperation = getSelectedOperation(viewState);
+
+  return {
+    type: "modal",
+    callback_id: GARAGE_MODE_MODAL_CALLBACK_ID,
+    title: {
+      type: "plain_text",
+      text: "Garage Mode",
+    },
+    submit: {
+      type: "plain_text",
+      text: "Submit",
+    },
+    close: {
+      type: "plain_text",
+      text: "Cancel",
+    },
+    private_metadata: JSON.stringify({
+      openedBy: userId,
+      selectedAssetId: selectedAsset?.name ?? null,
+    }),
+    blocks: [
+      {
+        type: "input",
+        block_id: BLOCK_IDS.asset,
+        optional: assetUnavailable,
+        dispatch_action: true,
+        label: {
+          type: "plain_text",
+          text: "Asset",
+        },
+        element: {
+          type: "static_select",
+          action_id: ACTION_IDS.asset,
+          placeholder: {
+            type: "plain_text",
+            text: assetUnavailable ? "No assets available" : "Select an asset",
+          },
+          initial_option: initialAssetOption,
+          options: assetOptions,
+        },
+      },
+      buildGarageModeOperationBlock(selectedOperation),
     ].filter(Boolean),
   };
 }
