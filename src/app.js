@@ -740,7 +740,14 @@ async function start() {
         logger.info("Status check requested while previous check in progress.");
         return;
       }
-      const targets = Array.isArray(context?.results) ? context.results : [];
+      let targets = Array.isArray(context?.results) ? context.results : [];
+      if (
+        targets.length === 0 &&
+        context?.statusKind === "garage_mode" &&
+        context?.baseAsset?.id
+      ) {
+        targets = [{ assetId: context.baseAsset.id, machine: null }];
+      }
 
       if (targets.length === 0) {
         logger.warn("Status check invoked without targets");
