@@ -134,19 +134,9 @@ function degreesToCardinal(degrees) {
   return directions[index];
 }
 
-function formatDaylightLine(sun) {
-  if (!sun?.success || !sun.data) {
-    return "Rises @ N/A\nSets @ N/A";
-  }
-
-  const sunrise = formatClock(sun.data.sunriseLocal);
-  const sunset = formatClock(sun.data.sunsetLocal);
-  return `Rises @ ${sunrise}\nSets @ ${sunset}`;
-}
-
 function formatTides(tides) {
   if (!tides?.success || !Array.isArray(tides.data)) {
-    return { high: "No tide data.", low: "No tide data." };
+    return { high: [], low: [] };
   }
 
   const normalizeType = (type) => {
@@ -172,11 +162,10 @@ function formatTides(tides) {
     return `${time} @ ${height}`;
   };
 
-  const highText =
-    highs.length > 0 ? highs.map(formatEntry).join(" \n") : "None";
-  const lowText = lows.length > 0 ? lows.map(formatEntry).join(" \n") : "None";
-
-  return { high: highText, low: lowText };
+  return {
+    high: highs.map(formatEntry),
+    low: lows.map(formatEntry),
+  };
 }
 
 function getWaveField(parsed, name) {
@@ -260,7 +249,7 @@ function buildWeatherSummary(weather) {
   return summary;
 }
 
-function buildTempsField(weather) {
+function getWeatherStats(weather) {
   const periods =
     weather?.data?.properties?.periods ||
     weather?.properties?.periods ||
@@ -277,37 +266,91 @@ function buildTempsField(weather) {
       ? `${tonight.temperature}° ${tonight.temperatureUnit || "F"}`
       : "N/A";
 
-  return `🌡 *Temps:*\n${high} High\n${low} Low`;
-}
-
-function buildWindField(weather) {
-  const periods =
-    weather?.data?.properties?.periods ||
-    weather?.properties?.periods ||
-    weather?.data?.periods ||
-    [];
-  const today = periods?.[0];
-  if (!today) {
-    return "💨 *Winds:*\nN/A";
-  }
-
-  const windKts = parseWindSpeedToKts(today.windSpeed) || "N/A";
-  const dir = today.windDirection || "";
+  const windKts = parseWindSpeedToKts(today?.windSpeed) || "N/A";
+  const dir = today?.windDirection || "";
   const arrow = directionArrow(dir);
 
-  return `💨 *Winds:*\n${windKts}${dir ? ` ${dir}` : ""}${
-    arrow ? ` ${arrow}` : ""
-  }`;
+  return {
+    high,
+    low,
+    wind: `${windKts}${dir ? ` ${dir}` : ""}${arrow ? ` ${arrow}` : ""}`,
+  };
+}
+
+function getDaylightStats(sun) {
+  if (!sun?.success || !sun.data) {
+    return { sunrise: "N/A", sunset: "N/A" };
+  }
+
+  return {
+    sunrise: formatClock(sun.data.sunriseLocal),
+    sunset: formatClock(sun.data.sunsetLocal),
+  };
+}
+
+function buildStatsTable({ weather, waves, daylight, tides }) {
+  const DIVIDER = "__DIVIDER__";
+  const rows = [
+    ["Temp High", weather.high],
+    ["Temp Low", weather.low],
+    [DIVIDER, DIVIDER],
+    ["Wind", weather.wind],
+    [DIVIDER, DIVIDER],
+    ["Wave Ht", waves.height],
+    ["Wave Pd", waves.period],
+    ["Wave Dir", waves.direction],
+    [DIVIDER, DIVIDER],
+    ["Sunrise", daylight.sunrise],
+    ["Sunset", daylight.sunset],
+  ];
+
+  if (tides.high.length === 0 && tides.low.length === 0) {
+    rows.push([DIVIDER, DIVIDER]);
+    rows.push(["Tides", "No tide data"]);
+  } else {
+    rows.push([DIVIDER, DIVIDER]);
+    tides.high.forEach((entry, idx) => rows.push([`High ${idx + 1}`, entry]));
+    tides.low.forEach((entry, idx) => rows.push([`Low ${idx + 1}`, entry]));
+  }
+
+  const keyHeader = "Stat";
+  const valueHeader = "Value";
+  const dataRows = rows.filter(([key]) => key !== DIVIDER);
+  const keyWidth = Math.max(
+    keyHeader.length,
+    ...dataRows.map(([key]) => String(key).length)
+  );
+  const valueWidth = Math.max(
+    valueHeader.length,
+    ...dataRows.map(([, value]) => String(value).length)
+  );
+  const divider = `${"-".repeat(keyWidth)}-|-${"-".repeat(valueWidth)}`;
+  const lines = [
+    `${keyHeader.padEnd(keyWidth)} | ${valueHeader.padEnd(valueWidth)}`,
+    divider,
+    ...rows.map(([key, value]) =>
+      key === DIVIDER
+        ? divider
+        : `${String(key).padEnd(keyWidth)} | ${String(value).padEnd(valueWidth)}`
+    ),
+  ];
+
+  return `\`\`\`\n${lines.join("\n")}\n\`\`\``;
 }
 
 export function buildForecastMessage({ wave, weather, tides, sun }) {
   const dateLabel = formatPacificDate();
   const weatherSummary = buildWeatherSummary(weather);
-  const tempsField = buildTempsField(weather);
-  const windField = buildWindField(weather);
+  const weatherStats = getWeatherStats(weather);
   const waves = formatWaves(wave);
-  const daylight = formatDaylightLine(sun);
+  const daylight = getDaylightStats(sun);
   const tideLines = formatTides(tides);
+  const statsTable = buildStatsTable({
+    weather: weatherStats,
+    waves,
+    daylight,
+    tides: tideLines,
+  });
 
   return {
     response_type: "in_channel",
@@ -338,32 +381,10 @@ export function buildForecastMessage({ wave, weather, tides, sun }) {
       { type: "divider" },
       {
         type: "section",
-        fields: [
-          { type: "mrkdwn", text: tempsField },
-          { type: "mrkdwn", text: windField },
-        ],
-      },
-      {
-        type: "section",
-        fields: [
-          {
-            type: "mrkdwn",
-            text: `🌊 *Waves:*\nHeight: ${waves.height}\nPeriod: ${waves.period}\nDirection: ${waves.direction}`,
-          },
-          {
-            type: "mrkdwn",
-            text: `☀️ *Daylight:*\n${daylight}`,
-          },
-        ],
-      },
-      {
-        type: "section",
-        fields: [
-          {
-            type: "mrkdwn",
-            text: `🏝️ *Tides:*\n*High:*\n${tideLines.high}\n*Low:*\n${tideLines.low}`,
-          },
-        ],
+        text: {
+          type: "mrkdwn",
+          text: statsTable,
+        },
       },
     ],
   };
