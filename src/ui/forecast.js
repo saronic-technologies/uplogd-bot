@@ -320,18 +320,14 @@ function buildStatsTable({ weather, waves, daylight, tides }) {
     keyHeader.length,
     ...dataRows.map(([key]) => String(key).length)
   );
-  const valueWidth = Math.max(
-    valueHeader.length,
-    ...dataRows.map(([, value]) => String(value).length)
-  );
-  const divider = `${"-".repeat(keyWidth)}-|-${"-".repeat(valueWidth)}`;
+  const divider = `${"-".repeat(keyWidth)}-|-${"-".repeat(valueHeader.length)}`;
   const lines = [
-    `${keyHeader.padEnd(keyWidth)} | ${valueHeader.padEnd(valueWidth)}`,
+    `${keyHeader.padEnd(keyWidth)} | ${valueHeader}`,
     divider,
     ...rows.map(([key, value]) =>
       key === DIVIDER
         ? divider
-        : `${String(key).padEnd(keyWidth)} | ${String(value).padEnd(valueWidth)}`
+        : `${String(key).padEnd(keyWidth)} | ${String(value)}`
     ),
   ];
 
