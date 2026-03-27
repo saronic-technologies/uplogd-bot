@@ -9,6 +9,61 @@ const GROUPED_LABEL_OFFSET_Y = 14;
 const GROUPED_LABEL_LINE_HEIGHT = 14;
 const TITLE_COLOR = "rgb(22, 32, 41)";
 
+async function tryConvertSvgToPng(svgPath, pngPath) {
+  const macConverters = [
+    async () => {
+      await execFileAsync("sips", [
+        "-s",
+        "format",
+        "png",
+        svgPath,
+        "--out",
+        pngPath,
+      ]);
+    },
+    async () => {
+      const outputDir = path.dirname(svgPath);
+      await execFileAsync("qlmanage", [
+        "-t",
+        "-s",
+        "1200",
+        "-o",
+        outputDir,
+        svgPath,
+      ]);
+      await fs.rename(`${svgPath}.png`, pngPath);
+    },
+  ];
+
+  const linuxConverters = [
+    async () => {
+      await execFileAsync("rsvg-convert", ["-f", "png", "-o", pngPath, svgPath]);
+    },
+    async () => {
+      await execFileAsync("magick", [svgPath, pngPath]);
+    },
+    async () => {
+      await execFileAsync("convert", [svgPath, pngPath]);
+    },
+  ];
+
+  const converters =
+    process.platform === "darwin"
+      ? [...macConverters, ...linuxConverters]
+      : [...linuxConverters, ...macConverters];
+
+  for (const convert of converters) {
+    try {
+      await convert();
+      return true;
+    } catch (error) {
+      continue;
+    }
+  }
+
+  return false;
+}
+
 function formatTitleDate(date = new Date()) {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Los_Angeles",
@@ -556,33 +611,11 @@ export async function generateMapImage({
   const svg = await renderSvg({ notices, aoi, basemap });
   await fs.writeFile(svgPath, svg);
 
-  try {
-    await execFileAsync("/usr/bin/sips", [
-      "-s",
-      "format",
-      "png",
-      svgPath,
-      "--out",
-      pngPath,
-    ]);
+  const converted = await tryConvertSvgToPng(svgPath, pngPath);
+  if (converted) {
     await fs.unlink(svgPath).catch(() => {});
     return pngPath;
-  } catch (error) {
-    try {
-      const outputDir = path.dirname(svgPath);
-      await execFileAsync("/usr/bin/qlmanage", [
-        "-t",
-        "-s",
-        "1200",
-        "-o",
-        outputDir,
-        svgPath,
-      ]);
-      await fs.rename(`${svgPath}.png`, pngPath);
-      await fs.unlink(svgPath).catch(() => {});
-      return pngPath;
-    } catch (fallbackError) {
-      return null;
-    }
   }
+
+  return null;
 }
