@@ -50,7 +50,7 @@ function ensureEnv() {
   const missing = requiredEnv.filter((key) => !process.env[key]);
   if (missing.length > 0) {
     throw new Error(
-      `Missing required environment variables: ${missing.join(", ")}`
+      `Missing required environment variables: ${missing.join(", ")}`,
     );
   }
 }
@@ -132,7 +132,10 @@ async function collectForecast({ logger }) {
     logger?.error?.("Failed to fetch SD wave data", wave.error ?? wave);
   }
   if (weather && !weather.success) {
-    logger?.error?.("Failed to fetch SD weather data", weather.error ?? weather);
+    logger?.error?.(
+      "Failed to fetch SD weather data",
+      weather.error ?? weather,
+    );
   }
   if (tides && !tides.success) {
     logger?.error?.("Failed to fetch SD tides data", tides.error ?? tides);
@@ -183,7 +186,7 @@ function getTimeZoneOffsetMs(timeZone, date = new Date()) {
     parts.day ?? 1,
     parts.hour ?? 0,
     parts.minute ?? 0,
-    parts.second ?? 0
+    parts.second ?? 0,
   );
   return asUTC - date.getTime();
 }
@@ -196,14 +199,17 @@ function zonedDate(timeZone, parts) {
     parts.hour ?? 0,
     parts.minute ?? 0,
     parts.second ?? 0,
-    parts.ms ?? 0
+    parts.ms ?? 0,
   );
   const offset = getTimeZoneOffsetMs(timeZone, new Date(utcGuess));
   return new Date(utcGuess - offset);
 }
 
 function getPacificNow() {
-  return zonedDate(PACIFIC_TIME_ZONE, getTimeZoneParts(new Date(), PACIFIC_TIME_ZONE));
+  return zonedDate(
+    PACIFIC_TIME_ZONE,
+    getTimeZoneParts(new Date(), PACIFIC_TIME_ZONE),
+  );
 }
 
 function formatPacificDateTime(date) {
@@ -236,7 +242,7 @@ function msUntilNextTime(hour, minute = 0) {
   if (target <= pacificNow) {
     const tomorrowParts = getTimeZoneParts(
       new Date(pacificNow.getTime() + 24 * 60 * 60 * 1000),
-      PACIFIC_TIME_ZONE
+      PACIFIC_TIME_ZONE,
     );
     target = zonedDate(PACIFIC_TIME_ZONE, {
       ...tomorrowParts,
@@ -252,7 +258,9 @@ function msUntilNextTime(hour, minute = 0) {
 
 function scheduleDailyForecast({ client, logger }) {
   if (!sdForecastChannel) {
-    logger?.info?.("SD_FORECAST_CHANNEL not set; skipping daily forecast schedule.");
+    logger?.info?.(
+      "SD_FORECAST_CHANNEL not set; skipping daily forecast schedule.",
+    );
     return;
   }
 
@@ -354,7 +362,6 @@ function scheduleOneTimeForecast({ client, logger, channel, delayMs }) {
   }, delayMs);
 }
 
-
 async function start() {
   ensureEnv();
 
@@ -386,7 +393,7 @@ async function start() {
         await client.views.open({
           trigger_id: body.trigger_id,
           view: buildErrorModal(
-            "Unable to load assets. Please try again later."
+            "Unable to load assets. Please try again later.",
           ),
         });
       } catch (openError) {
@@ -413,7 +420,7 @@ async function start() {
           trigger_id: body.trigger_id,
           view: buildErrorModal(
             "Unable to load assets. Please try again later.",
-            "Garage Mode"
+            "Garage Mode",
           ),
         });
       } catch (openError) {
@@ -465,7 +472,10 @@ async function start() {
     await ack();
 
     try {
-      const preparedSubmission = await prepareSubmissionDetails({ view, logger });
+      const preparedSubmission = await prepareSubmissionDetails({
+        view,
+        logger,
+      });
 
       if (!preparedSubmission) {
         return;
@@ -486,7 +496,7 @@ async function start() {
           machine,
           success: null,
           responseSummary: "Waiting for uplogd…",
-        })
+        }),
       );
 
       let dmMessage;
@@ -549,7 +559,9 @@ async function start() {
       const finalContext = createSubmissionContext({
         ...summary,
         pendingRequest: false,
-        requestedBy: summary?.requestedBy?.id ? summary.requestedBy : requestedBy,
+        requestedBy: summary?.requestedBy?.id
+          ? summary.requestedBy
+          : requestedBy,
         responseMode: "update",
       });
       const finalMessage = buildSubmissionMessage(finalContext);
@@ -663,7 +675,10 @@ async function start() {
               ...channelMessage,
             });
           } catch (channelError) {
-            logger.error("Failed to post garage mode update to channel", channelError);
+            logger.error(
+              "Failed to post garage mode update to channel",
+              channelError,
+            );
           }
         }
 
@@ -682,7 +697,9 @@ async function start() {
         const finalContext = createSubmissionContext({
           ...summary,
           pendingRequest: false,
-          requestedBy: summary?.requestedBy?.id ? summary.requestedBy : requestedBy,
+          requestedBy: summary?.requestedBy?.id
+            ? summary.requestedBy
+            : requestedBy,
           responseMode: "update",
           serviceLabel: "garage mode",
           statusKind: "garage_mode",
@@ -710,7 +727,7 @@ async function start() {
       } catch (error) {
         logger.error("Failed to forward garage mode submission", error);
       }
-    }
+    },
   );
 
   app.action(
@@ -804,7 +821,10 @@ async function start() {
             ...channelProgress,
           });
         } catch (channelUpdateError) {
-          logger.error("Failed to show channel status progress", channelUpdateError);
+          logger.error(
+            "Failed to show channel status progress",
+            channelUpdateError,
+          );
         }
       }
 
@@ -819,8 +839,8 @@ async function start() {
             assetId: item.assetId,
             machine: item.machine,
             logger,
-          })
-        )
+          }),
+        ),
       );
 
       const statuses = statusResults.map((result, index) => {
@@ -880,7 +900,10 @@ async function start() {
           });
           return;
         } catch (finalRespondError) {
-          logger.error("Failed to send final status via respond", finalRespondError);
+          logger.error(
+            "Failed to send final status via respond",
+            finalRespondError,
+          );
         }
       }
 
@@ -889,7 +912,7 @@ async function start() {
         user: body.user?.id,
         ...finalEphemeral,
       });
-    }
+    },
   );
 
   app.command(sdForecastCommand, async ({ ack, respond, logger, body }) => {
@@ -913,15 +936,21 @@ async function start() {
         return;
       }
 
-      const forecast = await collectForecast({ logger });
-      const message = buildForecastMessage(forecast);
+      const message = await buildForecastResponse({
+        logger,
+        includeNotmar,
+        slackClient: client,
+        channel: body?.channel_id ?? null,
+        collectForecast,
+        forceRefreshBnm: process.env.BNM_FORCE_REFRESH === "1",
+        retryBnm: false,
+      });
       await respond(message);
     } catch (error) {
       logger.error("Failed to fulfill /sdforecast request", error);
       await respond({
         response_type: "ephemeral",
-        text:
-          "Unable to fetch San Diego forecast right now. Try again in a moment.",
+        text: "Unable to fetch San Diego forecast right now. Try again in a moment.",
       });
     }
   });
