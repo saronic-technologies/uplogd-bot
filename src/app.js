@@ -31,6 +31,11 @@ import { fetchTodaysTides } from "./util/fetchTides.js";
 import { fetchSunTimes } from "./util/fetchSunTimes.js";
 import { fetchWaves } from "./util/fetchWaves.js";
 import { fetchWeather } from "./util/fetchWeather.js";
+import { scheduleDailyBnmBrief } from "./util/bnmBrief.js";
+import {
+  buildForecastResponse,
+  parseForecastCommandOptions,
+} from "./util/sdForecast.js";
 
 const { App, LogLevel } = bolt;
 const PACIFIC_TIME_ZONE = "America/Los_Angeles";
@@ -44,6 +49,7 @@ const garageModeShortcutId =
   process.env.GARAGE_MODE_SHORTCUT_ID || "garage_mode";
 const sdForecastCommand = process.env.SD_FORECAST_COMMAND || "/sdforecast";
 const sdForecastChannel = process.env.SD_FORECAST_CHANNEL || null;
+const automatedNotmarEnabled = process.env.BNM_AUTOMATED_ENABLED === "1";
 let app;
 
 function ensureEnv() {
@@ -270,8 +276,15 @@ function scheduleDailyForecast({ client, logger }) {
         const isWeekday = day >= 1 && day <= 5;
 
         if (isWeekday) {
-          const forecast = await collectForecast({ logger });
-          const message = buildForecastMessage(forecast);
+          const message = await buildForecastResponse({
+            logger,
+            includeNotmar: automatedNotmarEnabled,
+            slackClient: client,
+            channel: sdForecastChannel,
+            collectForecast,
+            forceRefreshBnm: false,
+            retryBnm: false,
+          });
           await client.chat.postMessage({
             channel: sdForecastChannel,
             text: message.text,
@@ -892,12 +905,14 @@ async function start() {
     }
   );
 
-  app.command(sdForecastCommand, async ({ ack, respond, logger, body }) => {
+  app.command(sdForecastCommand, async ({ ack, respond, logger, body, client }) => {
     await ack();
 
     try {
       const commandText = (body?.text ?? "").trim();
-      const schedule = parseOneTimeSchedule(commandText);
+      const { includeNotmar, normalizedText } =
+        parseForecastCommandOptions(commandText);
+      const schedule = parseOneTimeSchedule(normalizedText);
 
       if (schedule && body?.channel_id) {
         scheduleOneTimeForecast({
@@ -908,13 +923,20 @@ async function start() {
         });
         await respond({
           response_type: "ephemeral",
-          text: `Scheduled forecast ${schedule.label} for <#${body.channel_id}>.`,
+          text: `Scheduled forecast ${schedule.label} for <#${body.channel_id}>.${includeNotmar ? " Include `notmar` is only supported for immediate runs right now." : ""}`,
         });
         return;
       }
 
-      const forecast = await collectForecast({ logger });
-      const message = buildForecastMessage(forecast);
+      const message = await buildForecastResponse({
+        logger,
+        includeNotmar,
+        slackClient: client,
+        channel: body?.channel_id ?? null,
+        collectForecast,
+        forceRefreshBnm: process.env.BNM_FORCE_REFRESH === "1",
+        retryBnm: includeNotmar,
+      });
       await respond(message);
     } catch (error) {
       logger.error("Failed to fulfill /sdforecast request", error);
@@ -931,6 +953,13 @@ async function start() {
   console.log("⚡️ Slack Bolt app (Socket Mode) is running!");
 
   scheduleDailyForecast({ client: app.client, logger: app.logger });
+  if (automatedNotmarEnabled) {
+    scheduleDailyBnmBrief({
+      logger: app.logger,
+      msUntilNextTime,
+      formatPacificDateTime,
+    });
+  }
 }
 
 start().catch((error) => {

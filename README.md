@@ -34,6 +34,8 @@ Slack app scaffold that runs entirely in Socket Mode, opens a modal from a globa
 | `ASSETS_AUTH_TOKEN` | Optional bearer token used when fetching assets. |
 | `UPLOGD_UPDATES_CHANNEL` | Optional channel ID (e.g. `C01234567`). When set, the bot posts submission updates there instead of DMing the user. |
 | `UPLOGD_DM_RECIPIENT` | Optional user ID (e.g. `U0123ABCD`). When set, the bot sends DM summaries to this user instead of the requester. |
+| `BNM_STORE_DIR` | Optional. Overrides the local JSON cache directory for the San Diego BNM briefing pipeline. Defaults to `store/`. |
+| `BNM_BRIEF_CHANNEL` | Optional channel ID for the daily 7:45 AM Pacific Sector San Diego BNM briefing post. When omitted, the pipeline still runs locally but does not auto-post to Slack. |
 
 3. Create the Slack app (or open your existing one):
 
@@ -67,6 +69,32 @@ The project includes a PM2 script that keeps the bot running on a server:
 3. Check the process anytime with `pm2 status uplogd-bot`.
 4. Stream logs when needed with `pm2 logs uplogd-bot`.
 5. Stop or remove the process via `pm2 stop uplogd-bot` or `pm2 delete uplogd-bot`.
+
+## Sector San Diego BNM briefing
+
+The repo now includes a file-backed BNM pipeline that treats the latest Sector San Diego summary as the daily authoritative active set.
+
+- Scheduled run: `7:45 AM America/Los_Angeles`
+- Manual run in shell: `npm run bnm:run`
+- Manual Slack trigger: `/sdforecast notmar`
+- Local artifacts:
+  - `store/latest_summary.json`
+  - `store/id_to_guid.json`
+  - `store/notices/*.json`
+  - `store/runs/YYYY-MM-DD.json`
+  - `store/maps/YYYY-MM-DD.png`
+
+What the first version does:
+
+- Searches recent NAVCEN Sector San Diego BNM messages
+- Finds the latest summary and extracts active notice IDs
+- Resolves each active ID to a full notice
+- Parses notice timing and polygon coordinate lists
+- Filters notices against a built-in San Diego AOI
+- Generates a Slack-ready text brief
+- Generates a local overlay map PNG when relevant geometry is available
+
+The store is recoverable cache only. If it is deleted, the next run rebuilds state from live NAVCEN data.
 
 ## How it works
 
