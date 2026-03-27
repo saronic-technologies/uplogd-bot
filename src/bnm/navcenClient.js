@@ -10,6 +10,11 @@ import { extractLinks, extractNavcenMessageText } from "./html.js";
 
 const NOTICE_ID_FROM_LINK_REGEX = /\b([A-Z]{2,}\s+[A-Z]{2,}\s+)?BNM\s+(\d{4}-\d{2})\b/i;
 
+export function isLikelySummarySearchResult(result) {
+  const text = `${result?.link_text ?? ""}`.toLowerCase();
+  return text.includes("summary");
+}
+
 function buildUrl(pathname, params = {}) {
   const url = new URL(pathname, NAVCEN_BASE_URL);
   Object.entries(params).forEach(([key, value]) => {

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { DEFAULT_AOI, DEFAULT_SEARCH_WINDOWS_DAYS, DEFAULT_STORE_DIR } from "./config.js";
 import { generateMapImage } from "./map.js";
-import { NavcenClient } from "./navcenClient.js";
+import { isLikelySummarySearchResult, NavcenClient } from "./navcenClient.js";
 import { parseNoticeMessage } from "./noticeParser.js";
 import { filterNotices } from "./relevance.js";
 import { buildSlackBrief } from "./slack.js";
@@ -84,12 +84,14 @@ async function findLatestSummary({
   for (const windowDays of searchWindowsDays) {
     logger?.info?.("Searching NAVCEN window for summary", { windowDays });
     const searchResults = await navcen.fetchSearchResults({ days: windowDays });
+    const summaryCandidates = searchResults.filter(isLikelySummarySearchResult);
     logger?.info?.("Fetched search-result candidates for summary search", {
       windowDays,
       candidates: searchResults.length,
+      summaryCandidates: summaryCandidates.length,
     });
 
-    for (const candidate of searchResults) {
+    for (const candidate of summaryCandidates) {
       const message = await navcen.fetchMessage(candidate.guid);
       if (isLikelySummaryMessage(message)) {
         const parsedSummary = parseSummaryMessage(message);
