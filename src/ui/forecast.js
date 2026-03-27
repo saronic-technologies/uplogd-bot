@@ -338,6 +338,90 @@ function buildStatsTable({ weather, waves, daylight, tides }) {
   return `\`\`\`\n${lines.join("\n")}\n\`\`\``;
 }
 
+function chunkMrkdwnText(text, maxLength = 2800) {
+  const sections = [];
+  const lines = String(text)
+    .split("\n")
+    .map((line) => line.trimEnd());
+  let current = [];
+
+  const flush = () => {
+    if (current.length === 0) {
+      return;
+    }
+    sections.push(current.join("\n"));
+    current = [];
+  };
+
+  lines.forEach((line) => {
+    const candidate = [...current, line].join("\n");
+    if (candidate.length > maxLength) {
+      flush();
+    }
+    current.push(line);
+  });
+  flush();
+
+  return sections;
+}
+
+export function appendNotmarToForecastMessage(baseMessage, notmarText) {
+  if (!notmarText) {
+    return baseMessage;
+  }
+
+  const sections = chunkMrkdwnText(notmarText);
+
+  return {
+    ...baseMessage,
+    text: `${baseMessage?.text ?? "San Diego forecast"}\n\n${notmarText}`,
+    blocks: [
+      ...(baseMessage.blocks ?? []),
+      { type: "divider" },
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "BNM / NOTMAR",
+          emoji: true,
+        },
+      },
+      ...sections.map((section) => ({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: section || "_No BNM content available._",
+        },
+      })),
+    ],
+  };
+}
+
+export function appendNotmarSummaryToForecastMessage(
+  baseMessage,
+  { summaryUrl } = {}
+) {
+  if (!summaryUrl) {
+    return baseMessage;
+  }
+
+  return {
+    ...baseMessage,
+    text: `${baseMessage?.text ?? "San Diego forecast"}\nNOTMAR summary: ${summaryUrl}`,
+    blocks: [
+      ...(baseMessage.blocks ?? []),
+      { type: "divider" },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*NOTMAR summary:* ${summaryUrl}`,
+        },
+      },
+    ],
+  };
+}
+
 export function buildForecastMessage({ wave, weather, tides, sun }) {
   const dateLabel = formatPacificDate();
   const weatherSummary = buildWeatherSummary(weather);
