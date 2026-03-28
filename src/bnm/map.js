@@ -69,14 +69,14 @@ function formatTitleDate(date = new Date()) {
     timeZone: "America/Los_Angeles",
     day: "2-digit",
     month: "short",
-    year: "2-digit",
+    year: "numeric",
   });
 
-  return formatter
-    .formatToParts(date)
-    .filter((part) => part.type !== "literal")
-    .map((part) => part.value.toUpperCase())
-    .join(" ");
+  const parts = formatter.formatToParts(date);
+  const day = parts.find((part) => part.type === "day")?.value ?? "";
+  const month = parts.find((part) => part.type === "month")?.value ?? "";
+  const year = parts.find((part) => part.type === "year")?.value ?? "";
+  return `${day} ${month.toUpperCase()} ${year}`.trim();
 }
 
 function projectPoint([lon, lat], extent, frame) {

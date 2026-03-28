@@ -1,7 +1,7 @@
 import path from "node:path";
 import { DEFAULT_AOI, DEFAULT_SEARCH_WINDOWS_DAYS, DEFAULT_STORE_DIR } from "./config.js";
 import { generateMapImage } from "./map.js";
-import { isLikelySummarySearchResult, NavcenClient } from "./navcenClient.js";
+import { NavcenClient } from "./navcenClient.js";
 import { parseNoticeMessage } from "./noticeParser.js";
 import { filterNotices } from "./relevance.js";
 import { buildSlackBrief } from "./slack.js";
@@ -76,64 +76,77 @@ function normalizeParsedNotice(parsedNotice, noticeId) {
 async function findLatestSummary({
   navcen,
   logger,
-  searchWindowsDays,
 }) {
-  let bestSummary = null;
-  let bestWindowDays = null;
+  const summaryWindows = [7, 14];
 
-  for (const windowDays of searchWindowsDays) {
+  for (const windowDays of summaryWindows) {
     logger?.info?.("Searching NAVCEN window for summary", { windowDays });
-    const searchResults = await navcen.fetchSearchResults({ days: windowDays });
-    const summaryCandidates = searchResults.filter(isLikelySummarySearchResult);
-    logger?.info?.("Fetched search-result candidates for summary search", {
-      windowDays,
-      candidates: searchResults.length,
-      summaryCandidates: summaryCandidates.length,
-    });
+    const summaryCandidates = [];
+    const maxPages = windowDays <= 7 ? 1 : 2;
 
-    for (const candidate of summaryCandidates) {
-      const message = await navcen.fetchMessage(candidate.guid);
-      if (isLikelySummaryMessage(message)) {
+    for (let page = 0; page < maxPages; page += 1) {
+      const pageResults = await navcen.fetchSearchResultsPage({
+        days: windowDays,
+        page,
+      });
+      logger?.info?.("Scanning search results page for latest summary", {
+        windowDays,
+        page,
+        candidates: pageResults.length,
+      });
+
+      for (const candidate of pageResults) {
+        const message = await navcen.fetchMessage(candidate.guid);
+        if (!isLikelySummaryMessage(message)) {
+          continue;
+        }
+
         const parsedSummary = parseSummaryMessage(message);
         if (parsedSummary.active_notice_ids.length > 0) {
-          const parsedTime = parsedSummary.published_at
-            ? new Date(parsedSummary.published_at).getTime()
-            : 0;
-          const bestTime = bestSummary?.published_at
-            ? new Date(bestSummary.published_at).getTime()
-            : 0;
-
-          if (!bestSummary || parsedTime > bestTime) {
-            bestSummary = parsedSummary;
-            bestWindowDays = windowDays;
-          }
-
+          summaryCandidates.push(parsedSummary);
           logger?.info?.("Found summary candidate", {
             windowDays,
+            page,
             guid: parsedSummary.guid,
             published_at: parsedSummary.published_at,
             activeNoticeIds: parsedSummary.active_notice_ids.length,
           });
         }
       }
+
+      if (pageResults.length < 25) {
+        break;
+      }
     }
 
-    if (bestSummary) {
-      logger?.info?.("Selected newest summary after window scan", {
+    if (summaryCandidates.length > 0) {
+      const latestSummary = summaryCandidates.reduce((best, current) => {
+        const bestTime = best?.published_at
+          ? new Date(best.published_at).getTime()
+          : 0;
+        const currentTime = current?.published_at
+          ? new Date(current.published_at).getTime()
+          : 0;
+        return currentTime > bestTime ? current : best;
+      }, null);
+
+      logger?.info?.("Selected newest summary after bounded window scan", {
         windowDays,
-        guid: bestSummary.guid,
-        published_at: bestSummary.published_at,
+        guid: latestSummary.guid,
+        published_at: latestSummary.published_at,
+        candidates: summaryCandidates.length,
       });
+
       return {
-        summary: bestSummary,
-        summaryWindowDays: bestWindowDays,
+        summary: latestSummary,
+        summaryWindowDays: windowDays,
       };
     }
   }
 
   return {
-    summary: bestSummary,
-    summaryWindowDays: bestWindowDays,
+    summary: null,
+    summaryWindowDays: null,
   };
 }
 

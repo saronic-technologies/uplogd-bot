@@ -10,11 +10,6 @@ import { extractLinks, extractNavcenMessageText } from "./html.js";
 
 const NOTICE_ID_FROM_LINK_REGEX = /\b([A-Z]{2,}\s+[A-Z]{2,}\s+)?BNM\s+(\d{4}-\d{2})\b/i;
 
-export function isLikelySummarySearchResult(result) {
-  const text = `${result?.link_text ?? ""}`.toLowerCase();
-  return text.includes("summary");
-}
-
 function buildUrl(pathname, params = {}) {
   const url = new URL(pathname, NAVCEN_BASE_URL);
   Object.entries(params).forEach(([key, value]) => {
@@ -54,6 +49,32 @@ async function fetchText(url, fetchImpl = fetch) {
   return response.text();
 }
 
+function parseSearchResultsPage(html, seenGuids = new Set()) {
+  const links = extractLinks(
+    html,
+    ({ href }) => href.includes(NAVCEN_MESSAGE_PATH)
+  );
+
+  return links
+    .map((link) => {
+      const guid = parseGuidFromHref(link.href);
+      if (!guid || seenGuids.has(guid)) {
+        return null;
+      }
+
+      const noticeMatch = link.text.match(NOTICE_ID_FROM_LINK_REGEX);
+      return {
+        guid,
+        url: buildUrl(NAVCEN_MESSAGE_PATH, { guid }),
+        link_text: link.text,
+        notice_id: noticeMatch?.[2] ?? null,
+        is_san_diego:
+          /\bSEC SSD\b/i.test(link.text) || /\bSAN DIEGO\b/i.test(link.text),
+      };
+    })
+    .filter(Boolean);
+}
+
 export class NavcenClient {
   constructor({ fetchImpl = fetch, logger } = {}) {
     this.fetchImpl = fetchImpl;
@@ -76,6 +97,23 @@ export class NavcenClient {
     return buildUrl(NAVCEN_MESSAGE_PATH, { guid });
   }
 
+  async fetchSearchResultsPage({ days = 30, page = 0 } = {}) {
+    const url = this.buildSearchResultsUrl({ days, page });
+    this.logger?.info?.("Fetching NAVCEN search results page", {
+      days,
+      page,
+      url,
+    });
+    const html = await fetchText(url, this.fetchImpl);
+    const pageResults = parseSearchResultsPage(html);
+    this.logger?.info?.("Fetched NAVCEN search results page", {
+      days,
+      page,
+      pageResults: pageResults.length,
+    });
+    return pageResults;
+  }
+
   async fetchSearchResults({ days = 30, maxPages = 10 } = {}) {
     const results = [];
     const seenGuids = new Set();
@@ -88,29 +126,7 @@ export class NavcenClient {
         url,
       });
       const html = await fetchText(url, this.fetchImpl);
-      const links = extractLinks(
-        html,
-        ({ href }) => href.includes(NAVCEN_MESSAGE_PATH)
-      );
-
-      const pageResults = links
-        .map((link) => {
-          const guid = parseGuidFromHref(link.href);
-          if (!guid || seenGuids.has(guid)) {
-            return null;
-          }
-
-          const noticeMatch = link.text.match(NOTICE_ID_FROM_LINK_REGEX);
-          return {
-            guid,
-            url: this.buildMessageUrl(guid),
-            link_text: link.text,
-            notice_id: noticeMatch?.[2] ?? null,
-            is_san_diego:
-              /\bSEC SSD\b/i.test(link.text) || /\bSAN DIEGO\b/i.test(link.text),
-          };
-        })
-        .filter(Boolean);
+      const pageResults = parseSearchResultsPage(html, seenGuids);
 
       pageResults.forEach((item) => {
         seenGuids.add(item.guid);
